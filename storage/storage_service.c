@@ -50,6 +50,7 @@
 
 //storage access log actions
 #define ACCESS_LOG_ACTION_UPLOAD_FILE    "upload"
+#define ACCESS_LOG_ACTION_UPLOAD_LOCAL_FILE    "upload_local"
 #define ACCESS_LOG_ACTION_DOWNLOAD_FILE  "download"
 #define ACCESS_LOG_ACTION_DELETE_FILE    "delete"
 #define ACCESS_LOG_ACTION_GET_METADATA   "get_metadata"
@@ -4552,7 +4553,7 @@ static int storage_upload_file(struct fast_task_info *pTask, bool bAppenderFile)
 
 		clean_func = dio_write_finish_clean_up;
 		file_offset = 0;
-    pFileContext->extra_info.upload.if_gen_filename = true;
+        pFileContext->extra_info.upload.if_gen_filename = true;
 		pFileContext->extra_info.upload.before_open_callback = NULL;
 		pFileContext->extra_info.upload.before_close_callback = NULL;
 		pFileContext->open_flags = O_WRONLY | O_CREAT | O_TRUNC \
@@ -4563,6 +4564,63 @@ static int storage_upload_file(struct fast_task_info *pTask, bool bAppenderFile)
 			p - pTask->data, dio_write_file, \
 			storage_upload_file_done_callback, \
 			clean_func, store_path_index);
+}
+
+/**
+1 byte:              store path index
+MAX_PATH_SIZE bytes: local file path 
+**/
+static int storage_upload_local_file(struct fast_task_info *pTask, bool bAppenderFile)
+{
+	struct stat stat_buf;
+	int total_length;
+	int result, fd, file_len;
+	char *p, *data, *file_ext_name;
+	char local_path[MAX_PATH_SIZE + 1];
+	
+	memcpy(local_path, pTask->data + sizeof(TrackerHeader) + 1, MAX_PATH_SIZE);
+	*(local_path + MAX_PATH_SIZE) = '\0';
+	
+	if(stat(local_path, &stat_buf) != 0 || !(stat_buf.st_mode&S_IFREG)){
+		logError("file: "__FILE__", line: %d, " \
+			"client ip: %s, local_path: %s " \
+			"is invalid", __LINE__, \
+			pTask->client_ip, local_path);
+		return EINVAL;
+	}
+
+	file_len = stat_buf.st_size;
+	if((fd = open(local_path, O_RDONLY, S_IREAD)) < 0){
+		result = errno != 0 ? errno : EACCES;
+		logError("file: "__FILE__", line: %d, " \
+			"open file: %s fail, " \
+			"errno: %d, error info: %s", \
+			__LINE__, local_path, \
+			result, STRERROR(result));
+		return result;
+	}
+	
+	total_length = sizeof(TrackerHeader) + 1 + 8 + FDFS_FILE_EXT_NAME_MAX_LEN + file_len;
+	p = data= (char *)malloc(total_length);
+	
+	memcpy(p, pTask->data, sizeof(TrackerHeader) + 1);
+	p += sizeof(TrackerHeader) + 1;
+	
+	long2buff(file_len, p);
+	p += FDFS_PROTO_PKG_LEN_SIZE;
+
+	file_ext_name = strrchr(local_path, '.');
+	memcpy(p, file_ext_name + 1, FDFS_FILE_EXT_NAME_MAX_LEN);
+	p += FDFS_FILE_EXT_NAME_MAX_LEN;
+
+	read(fd, p, file_len);
+	close(fd);
+	
+	pTask->data = data;
+	pTask->length = total_length;
+	((StorageClientInfo *)pTask->arg)->total_length = total_length;
+	
+	return storage_upload_file(pTask, bAppenderFile);
 }
 
 static int storage_deal_active_test(struct fast_task_info *pTask)
@@ -7948,6 +8006,13 @@ int storage_deal_task(struct fast_task_info *pTask)
 			result = storage_upload_file(pTask, false);
 			STORAGE_ACCESS_LOG(pTask, \
 				ACCESS_LOG_ACTION_UPLOAD_FILE, \
+				result);
+			break;
+		case STORAGE_PROTO_CMD_UPLOAD_LOCAL_FILE:
+			ACCESS_LOG_INIT_FIELDS();
+			result = storage_upload_local_file(pTask, false);
+			STORAGE_ACCESS_LOG(pTask, \
+				ACCESS_LOG_ACTION_UPLOAD_LOCAL_FILE, \
 				result);
 			break;
 		case STORAGE_PROTO_CMD_UPLOAD_APPENDER_FILE:
