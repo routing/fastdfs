@@ -4575,7 +4575,7 @@ static int storage_upload_local_file(struct fast_task_info *pTask, bool bAppende
 	struct stat stat_buf;
 	int total_length;
 	int result, fd, file_len;
-	char *p, *data, *file_ext_name;
+	char *p, *data, *task_data, *file_ext_name;
 	char local_path[MAX_PATH_SIZE + 1];
 	
 	memcpy(local_path, pTask->data + sizeof(TrackerHeader) + 1, MAX_PATH_SIZE);
@@ -4616,11 +4616,15 @@ static int storage_upload_local_file(struct fast_task_info *pTask, bool bAppende
 	read(fd, p, file_len);
 	close(fd);
 	
-	pTask->data = data;
-	pTask->length = total_length;
-	((StorageClientInfo *)pTask->arg)->total_length = total_length;
+	task_data = pTask->data;
+	pTask->data = p = data;
+	((StorageClientInfo *)pTask->arg)->total_length = pTask->length = total_length;
 	
-	return storage_upload_file(pTask, bAppenderFile);
+	result = storage_upload_file(pTask, bAppenderFile);
+	pTask->data = task_data;
+	free(p);
+	
+	return result;
 }
 
 static int storage_deal_active_test(struct fast_task_info *pTask)
